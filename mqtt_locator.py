@@ -16,12 +16,13 @@ import paho.mqtt.client as mqtt
 import pygame
 import pyproj
 from animated_value import AnimatedAverage, AnimatedValue
+from merchant_list import MerchantList, FadingName
 from Box2D import b2PolygonShape, b2World
 
 from uszipcode import ZipcodeSearchEngine
 
 
-class Ping(object):
+class Ping(FadingName):
     """A ping on the map"""
 
     _text_color = (0x55, 0x55, 0x55)
@@ -30,17 +31,17 @@ class Ping(object):
         (0x1E, 0xBB, 0xF3),
         (0x71, 0xCB, 0x3A)]
 
-    def __init__(self, world, x_loc, y_loc, text):
+    def __init__(self, world, x_loc, y_loc, text, font):
         self.created_time = time.time()
         self.life_time = 3
         self.color = random.choice(Ping.colors)
-        self.size = 40
-        self._text = text
-        self._text_surface = None
-        self._text_surface2 = None
+        self.size = 20
         self._rect_surface = None
         self._body = world.CreateDynamicBody(position=(x_loc, y_loc), fixedRotation=True)
         self._box = self._body.CreatePolygonFixture(box=(self.size, self.size), density=1, friction=0.0)
+        self._font = font
+        if (font != None and text != None):
+            self._text = FadingName(x_loc, y_loc + 25, text, font)
 
     def is_alive(self):
         """Returns true if we are within lifetime, false otherwise"""
@@ -50,7 +51,7 @@ class Ping(object):
         """Gets a scaling factor based on life remaining"""
         return (time.time() - self.created_time) / self.life_time
 
-    def draw(self, win, font):
+    def draw(self, win):
         """Renders a ping to a display window"""
         pos = self._body.position
 
@@ -63,17 +64,9 @@ class Ping(object):
             self._rect_surface.fill(self.color)
         self._rect_surface.set_alpha(alpha)
         win.blit(self._rect_surface, center_square)
-        if not self._text_surface:
-            self._text_surface = font.render(self._text, True, self._text_color)
-            rect = self._text_surface.get_rect()
-            self._text_surface.convert_alpha()
-            self._text_surface2 = pygame.surface.Surface(rect.size, pygame.SRCALPHA, 32)
-            self._text_width = rect.width
-        fade = int(255 * (1 - self.life_factor()))
-        self._text_surface2.fill((255, 255, 255, fade))
-        self._text_surface2.blit(self._text_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-        text_pos = (pos[0] - self._text_width/2, pos[1] + 25)
-        win.blit(self._text_surface2, text_pos)
+        if (self._font != None):
+            self._text.set_position(pos[0], pos[1] + (self.size/2))
+            self._text.draw(win)
 
     def destroy(self, world):
         if self._body:
@@ -114,7 +107,10 @@ class Map(object):
 
         self._font = pygame.font.SysFont('Source Sans Pro Semibold', 25)
         self._font_avg_spend = pygame.font.SysFont('Source Sans Pro', 30, bold=True)
-        self.background = pygame.image.load(config['map_image'])
+        self.background = pygame.image.load(self.config['map_image'])
+        self.enable_labels = self.config['enable_labels']
+
+        self._merchant_list = MerchantList(120,20, self._font)
 
         self.proj_in = pyproj.Proj(proj='latlong', datum='WGS84')
         self.proj_map = pyproj.Proj(init=config['map_projection'])
@@ -185,7 +181,12 @@ class Map(object):
             return
         merchant_name = payload.get('merchant_name', '')
         (x_coord, y_coord) = self.project(zcode["Longitude"], zcode["Latitude"])
-        self.pings.append(Ping(self._world, x_coord + self.x_offset, y_coord + self.y_offset, merchant_name))
+        if self.enable_labels == "True":
+            font = self._font
+        else:
+            font = None
+        self.pings.append(Ping(self._world, x_coord + self.x_offset, y_coord + self.y_offset, merchant_name, font))
+        self._merchant_list.add(merchant_name)
         spend = int(payload['spend_amount'])
         if spend:
             self._avg_spend.add(spend)
@@ -212,10 +213,11 @@ class Map(object):
         self.win.blit(self.background, (self.x_offset, self.y_offset))
         for ping in self.pings[:]:
             if ping.is_alive():
-                ping.draw(self.win, self._font)
+                ping.draw(self.win)
             else:
                 ping.destroy(self._world)
                 self.pings.remove(ping)
+        self._merchant_list.draw(self.win)
         self._draw_text_stat("Average Order Price: ${:0.02f}", self._avg_spend.get()/100.0, 0)
         self._draw_text_stat("Orders Today Total: ${:0,.02f}", self._cum_order_spend_anim.get()/100.0, 1)
         self._draw_text_stat("Orders Today: {:,}", self._order_count, 2)
